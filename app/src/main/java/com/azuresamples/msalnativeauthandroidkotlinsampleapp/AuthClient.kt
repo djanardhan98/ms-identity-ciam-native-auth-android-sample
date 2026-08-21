@@ -11,6 +11,7 @@ import com.microsoft.identity.nativeauth.NativeAuthPublicClientApplicationParame
 object AuthClient : Application() {
     private lateinit var authClient: INativeAuthPublicClientApplication
     private lateinit var authManager: AuthManager
+    private var isExternalLoggerConfigured = false
 
     const val EXTRA_CLIENT_ID = "native_auth_client_id"
     const val EXTRA_AUTHORITY_URL = "native_auth_authority_url"
@@ -28,12 +29,7 @@ object AuthClient : Application() {
     // Initialize the auth client with the provided clientId and authorityUrl, or with the default config file if they are not provided.
     @JvmStatic
     fun initialize(context: Context, clientId: String? = null, authorityUrl: String? = null) {
-        Logger.getInstance().setExternalLogger { tag, logLevel, message, containsPII ->
-            Log.e(
-                "MSAL",
-                "$tag $logLevel $message"
-            )
-        }
+        configureExternalLogger()
 
         // If clientId and authorityUrl are provided, create the auth client with the provided values. Otherwise, create the auth client with the default config file.
         if (clientId != null && authorityUrl != null) {
@@ -55,5 +51,20 @@ object AuthClient : Application() {
             )
         }
         authManager = AuthManager(authClient)
+    }
+
+    @Synchronized
+    private fun configureExternalLogger() {
+        if (isExternalLoggerConfigured) {
+            return
+        }
+
+        Logger.getInstance().setExternalLogger { tag, logLevel, message, containsPII ->
+            Log.e(
+                "MSAL",
+                "$tag $logLevel $message"
+            )
+        }
+        isExternalLoggerConfigured = true
     }
 }
