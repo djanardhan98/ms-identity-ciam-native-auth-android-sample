@@ -94,7 +94,7 @@ class AuthManager(private val application: INativeAuthPublicClientApplication) {
             is NativeAuthResultV2.SignInAfterResetPasswordRequired -> result.nextState
             is NativeAuthResultV2.StrongAuthRegistrationRequired -> result.nextState
             is NativeAuthResultV2.StrongAuthVerificationRequired -> result.nextState
-            is NativeAuthErrorV2 -> result.nextState ?: currentState
+            is NativeAuthErrorV2 -> currentState
             else -> null
         }
         return result
