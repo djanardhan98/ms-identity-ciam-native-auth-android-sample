@@ -7,6 +7,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import com.azuresamples.msalnativeauthandroidkotlinsampleapp.databinding.FragmentEmailPasswordBinding
 import com.microsoft.identity.client.PublicClientApplication
 import com.microsoft.identity.nativeauth.NativeAuthRequestInterceptor
@@ -17,7 +18,9 @@ import com.microsoft.identity.nativeauth.parameters.NativeAuthSignInParameters
 import com.microsoft.identity.nativeauth.parameters.NativeAuthSignUpParameters
 import com.microsoft.identity.nativeauth.statemachine.errors.GetAccessTokenError
 import com.microsoft.identity.nativeauth.statemachine.errors.GetAccountError
+import com.microsoft.identity.nativeauth.statemachine.errors.MFARequestChallengeErrorV2
 import com.microsoft.identity.nativeauth.statemachine.errors.SignInError
+import com.microsoft.identity.nativeauth.statemachine.errors.SignInErrorV2
 import com.microsoft.identity.nativeauth.statemachine.errors.SignUpError
 import com.microsoft.identity.nativeauth.statemachine.errors.NativeAuthErrorV2
 import com.microsoft.identity.nativeauth.statemachine.results.GetAccessTokenResult
@@ -27,6 +30,8 @@ import com.microsoft.identity.nativeauth.statemachine.results.SignOutResult
 import com.microsoft.identity.nativeauth.statemachine.results.SignUpResult
 import com.microsoft.identity.nativeauth.statemachine.results.NativeAuthResultV2
 import com.microsoft.identity.nativeauth.statemachine.states.AccountState
+import com.microsoft.identity.nativeauth.statemachine.states.MFARequiredStateV2
+import com.microsoft.identity.nativeauth.statemachine.states.MFAVerificationRequiredStateV2
 import com.microsoft.identity.nativeauth.statemachine.states.SignUpCodeRequiredState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +66,7 @@ class EmailPasswordSignInSignUpFragment : Fragment(), NativeAuthRequestIntercept
         val view = binding.root
 
         authClient = AuthClient.getAuthClient()
-        authManager = AuthManager(authClient)
+        authManager = AuthClient.getAuthManager()
         (authClient as? PublicClientApplication)?.let { app ->
             (app.configuration as? NativeAuthPublicClientApplicationConfiguration)?.requestInterceptor = this
         }
@@ -113,49 +118,46 @@ class EmailPasswordSignInSignUpFragment : Fragment(), NativeAuthRequestIntercept
     }
 
     private fun signIn() {
-        CoroutineScope(Dispatchers.Main).launch {
+        viewLifecycleOwner.lifecycleScope.launchWhenStarted {
             val email = binding.emailText.text.toString()
             val password = CharArray(binding.passwordText.length())
             binding.passwordText.text?.getChars(0, binding.passwordText.length(), password, 0)
 
-            if (Configuration.useNativeAuthV2) {
-                val result = authManager.signIn(email, password)
-                binding.passwordText.text?.clear()
+            try {
+                if (Configuration.useNativeAuthV2) {
+                    handleResultV2(authManager.signIn(email, password))
+                    return@launchWhenStarted
+                }
+
+                val parameters = NativeAuthSignInParameters(username = email)
+                parameters.password = password
+                when (val actionResult: SignInResult = authClient.signIn(parameters)) {
+                    is SignInResult.Complete -> {
+                        Toast.makeText(
+                            requireContext(),
+                            getString(R.string.sign_in_successful_message),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        displaySignedInState(accountState = actionResult.resultValue)
+                    }
+                    is SignInResult.CodeRequired -> {
+                        displayDialog(message = getString(R.string.sign_in_switch_to_otp_message))
+                    }
+                    is SignInResult.MFARequired -> {
+                        // Please refer to the MFA Fragment for handling MFA branches if conditional access - MFA is enabled.
+                        displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
+                    }
+                    is SignInResult.StrongAuthMethodRegistrationRequired -> {
+                        // Please refer to the MFA Fragment for handling Strong Auth Method Registration flow.
+                        displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
+                    }
+                    is SignInError -> {
+                        handleSignInError(actionResult)
+                    }
+                }
+            } finally {
+                _binding?.passwordText?.text?.clear()
                 password.fill('\u0000')
-                handleResultV2(result)
-                return@launch
-            }
-
-            val parameters = NativeAuthSignInParameters(username = email)
-            parameters.password = password
-            val actionResult: SignInResult = authClient.signIn(parameters)
-
-            binding.passwordText.text?.clear()
-            password.fill('\u0000')
-
-            when (actionResult) {
-                is SignInResult.Complete -> {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.sign_in_successful_message),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    displaySignedInState(accountState = actionResult.resultValue)
-                }
-                is SignInResult.CodeRequired -> {
-                    displayDialog(message = getString(R.string.sign_in_switch_to_otp_message))
-                }
-                is SignInResult.MFARequired -> {
-                    // Please refer to the MFA Fragment for handling MFA branches if conditional access - MFA is enabled.
-                    displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
-                }
-                is SignInResult.StrongAuthMethodRegistrationRequired -> {
-                    // Please refer to the MFA Fragment for handling Strong Auth Method Registration flow.
-                    displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
-                }
-                is SignInError -> {
-                    handleSignInError(actionResult)
-                }
             }
         }
     }
@@ -271,7 +273,7 @@ class EmailPasswordSignInSignUpFragment : Fragment(), NativeAuthRequestIntercept
         }
     }
 
-    private fun handleResultV2(result: NativeAuthResultV2) {
+    private suspend fun handleResultV2(result: NativeAuthResultV2) {
         when (result) {
             is NativeAuthResultV2.Complete -> {
                 Toast.makeText(
@@ -281,8 +283,59 @@ class EmailPasswordSignInSignUpFragment : Fragment(), NativeAuthRequestIntercept
                 ).show()
                 displaySignedInState(accountState = result.resultValue)
             }
+            is NativeAuthResultV2.MFARequired -> {
+                val emailMethod = result.authMethods.firstOrNull {
+                    it.challengeChannel.equals("email", ignoreCase = true)
+                }
+                if (emailMethod == null) {
+                    displayDialog(
+                        getString(R.string.unexpected_sdk_result_title),
+                        "No supported email authentication method was returned."
+                    )
+                    return
+                }
+
+                when (val challengeResult = authManager.selectAuthMethod(emailMethod)) {
+                    is NativeAuthResultV2.MFAVerificationRequired -> {
+                        navigateToMfaVerificationV2(
+                            mfaState = result.nextState,
+                            verificationState = challengeResult.nextState,
+                            sentTo = challengeResult.sentTo,
+                            channel = challengeResult.channel,
+                            authMethod = emailMethod
+                        )
+                    }
+                    is MFARequestChallengeErrorV2 -> {
+                        displayDialog(
+                            challengeResult.error ?: getString(R.string.unexpected_sdk_error_title),
+                            challengeResult.errorMessage
+                        )
+                    }
+                    is NativeAuthErrorV2 -> {
+                        displayDialog(
+                            challengeResult.error ?: getString(R.string.unexpected_sdk_error_title),
+                            challengeResult.exception?.message ?: challengeResult.errorMessage
+                        )
+                    }
+                    null -> {
+                        displayDialog(getString(R.string.unexpected_sdk_result_title), "No MFA challenge result was returned.")
+                    }
+                    else -> {
+                        displayDialog(getString(R.string.unexpected_sdk_result_title), challengeResult.toString())
+                    }
+                }
+            }
+            is SignInErrorV2 -> {
+                displayDialog(
+                    result.error ?: getString(R.string.unexpected_sdk_error_title),
+                    result.exception?.message ?: result.errorMessage
+                )
+            }
             is NativeAuthErrorV2 -> {
-                displayDialog(result.error ?: getString(R.string.unexpected_sdk_error_title), result.errorMessage)
+                displayDialog(
+                    result.error ?: getString(R.string.unexpected_sdk_error_title),
+                    result.exception?.message ?: result.errorMessage
+                )
             }
             else -> {
                 displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
@@ -322,6 +375,35 @@ class EmailPasswordSignInSignUpFragment : Fragment(), NativeAuthRequestIntercept
             .setMessage(message)
         val alertDialog = builder.create()
         alertDialog.show()
+    }
+
+    private fun navigateToMfaVerificationV2(
+        mfaState: MFARequiredStateV2,
+        verificationState: MFAVerificationRequiredStateV2,
+        sentTo: String,
+        channel: String,
+        authMethod: com.microsoft.identity.nativeauth.AuthMethod
+    ) {
+        if (!isAdded || parentFragmentManager.isStateSaved) {
+            return
+        }
+
+        val fragment = MFAVerificationFragment().apply {
+            arguments = Bundle().apply {
+                putParcelable(Constants.MFA_STATE, mfaState)
+                putParcelable(Constants.STATE, verificationState)
+                putString(Constants.SENT_TO, sentTo)
+                putString(Constants.CHANNEL, channel)
+                putParcelable(Constants.AUTH_METHOD, authMethod)
+            }
+        }
+
+        parentFragmentManager
+            .beginTransaction()
+            .setReorderingAllowed(true)
+            .addToBackStack(fragment::class.java.name)
+            .replace(R.id.scenario_fragment, fragment)
+            .commit()
     }
 
     private fun navigateToSignUp(nextState: SignUpCodeRequiredState) {
