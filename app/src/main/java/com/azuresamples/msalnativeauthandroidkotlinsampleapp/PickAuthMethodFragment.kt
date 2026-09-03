@@ -33,16 +33,13 @@ class PickAuthMethodFragment : Fragment() {
 
         val bundle = savedInstanceState ?: requireArguments()
         currentState = requireNotNull(bundle.getParcelable(Constants.STATE) as? Parcelable)
-        authMethods = requireNotNull(
-            (bundle.getSerializable(Constants.AUTH_METHOD_LIST) as? List<*>)
-                ?.filterIsInstance<AuthMethod>()
-        )
+        authMethods = requireNotNull(bundle.getParcelableArrayList<AuthMethod>(Constants.AUTH_METHOD_LIST))
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putParcelable(Constants.STATE, currentState)
-        outState.putSerializable(Constants.AUTH_METHOD_LIST, ArrayList(authMethods))
+        outState.putParcelableArrayList(Constants.AUTH_METHOD_LIST, ArrayList(authMethods))
     }
 
     override fun onCreateView(
@@ -80,13 +77,11 @@ class PickAuthMethodFragment : Fragment() {
             is MFARequiredState -> requestMfaChallengeV1(state, authMethod)
             is MFARequiredStateV2 -> requestChallengeV2(
                 call = { state.selectAuthMethod(authMethod) },
-                selectionState = state,
                 authMethod = authMethod
             )
             is RegisterStrongAuthState -> navigateToVerificationContact(state, authMethod)
             is StrongAuthRegistrationRequiredStateV2 -> requestChallengeV2(
                 call = { state.selectAuthMethod(authMethod) },
-                selectionState = state,
                 authMethod = authMethod
             )
             else -> displayDialog(getString(R.string.unexpected_sdk_result_title), state.toString())
@@ -99,7 +94,6 @@ class PickAuthMethodFragment : Fragment() {
                 is MFARequiredResult.VerificationRequired -> {
                     navigateToMfaVerification(
                         verificationState = result.nextState,
-                        selectionState = state,
                         sentTo = result.sentTo,
                         channel = result.channel,
                         authMethod = authMethod
@@ -117,7 +111,6 @@ class PickAuthMethodFragment : Fragment() {
 
     private fun requestChallengeV2(
         call: suspend () -> NativeAuthResultV2,
-        selectionState: Parcelable,
         authMethod: AuthMethod
     ) {
         viewLifecycleOwner.lifecycleScope.launchWhenStarted {
@@ -125,7 +118,6 @@ class PickAuthMethodFragment : Fragment() {
                 is NativeAuthResultV2.MFAVerificationRequired -> {
                     navigateToMfaVerification(
                         verificationState = result.nextState,
-                        selectionState = selectionState,
                         sentTo = result.sentTo,
                         channel = result.channel,
                         authMethod = authMethod
@@ -134,7 +126,6 @@ class PickAuthMethodFragment : Fragment() {
                 is NativeAuthResultV2.StrongAuthVerificationRequired -> {
                     navigateToMfaVerification(
                         verificationState = result.nextState,
-                        selectionState = selectionState,
                         sentTo = result.sentTo,
                         channel = result.channel,
                         authMethod = authMethod
@@ -155,14 +146,12 @@ class PickAuthMethodFragment : Fragment() {
 
     private fun navigateToMfaVerification(
         verificationState: Parcelable,
-        selectionState: Parcelable,
         sentTo: String,
         channel: String,
         authMethod: AuthMethod
     ) {
         val bundle = Bundle()
         bundle.putParcelable(Constants.STATE, verificationState)
-        bundle.putParcelable(Constants.SELECTION_STATE, selectionState)
         bundle.putString(Constants.SENT_TO, sentTo)
         bundle.putString(Constants.CHANNEL, channel)
         bundle.putParcelable(Constants.AUTH_METHOD, authMethod)

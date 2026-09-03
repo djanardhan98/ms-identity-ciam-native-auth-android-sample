@@ -371,7 +371,7 @@ class MFAFragment : Fragment() {
     private fun navigateToPickAuthMethod(nextState: Parcelable, authMethods: ArrayList<AuthMethod>) {
         val bundle = Bundle()
         bundle.putParcelable(Constants.STATE, nextState)
-        bundle.putSerializable(Constants.AUTH_METHOD_LIST, authMethods)
+        bundle.putParcelableArrayList(Constants.AUTH_METHOD_LIST, authMethods)
 
         val fragment = PickAuthMethodFragment()
         fragment.arguments = bundle

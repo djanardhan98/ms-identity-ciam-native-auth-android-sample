@@ -18,15 +18,12 @@ import com.microsoft.identity.nativeauth.statemachine.results.MFARequiredResult
 import com.microsoft.identity.nativeauth.statemachine.results.NativeAuthResultV2
 import com.microsoft.identity.nativeauth.statemachine.results.SignInResult
 import com.microsoft.identity.nativeauth.statemachine.states.MFARequiredState
-import com.microsoft.identity.nativeauth.statemachine.states.MFARequiredStateV2
 import com.microsoft.identity.nativeauth.statemachine.states.MFAVerificationRequiredStateV2
-import com.microsoft.identity.nativeauth.statemachine.states.StrongAuthRegistrationRequiredStateV2
 import com.microsoft.identity.nativeauth.statemachine.states.StrongAuthVerificationRequiredStateV2
 import kotlinx.coroutines.launch
 
 class MFAVerificationFragment : Fragment() {
     private lateinit var currentState: Parcelable
-    private var selectionState: Parcelable? = null
     private var returnToMfaTab = false
     private lateinit var authMethod: AuthMethod
     private lateinit var sentTo: String
@@ -43,8 +40,6 @@ class MFAVerificationFragment : Fragment() {
 
         val bundle = savedInstanceState ?: requireArguments()
         currentState = requireNotNull(bundle.getParcelable(Constants.STATE) as? Parcelable)
-        selectionState = bundle.getParcelable(Constants.SELECTION_STATE) as? Parcelable
-            ?: bundle.getParcelable(Constants.MFA_STATE) as? Parcelable
         returnToMfaTab = bundle.getBoolean(Constants.RETURN_TO_MFA_TAB)
         authMethod = requireNotNull(bundle.getParcelable(Constants.AUTH_METHOD) as? AuthMethod)
         sentTo = requireNotNull(bundle.getString(Constants.SENT_TO))
@@ -58,7 +53,6 @@ class MFAVerificationFragment : Fragment() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putParcelable(Constants.STATE, currentState)
-        outState.putParcelable(Constants.SELECTION_STATE, selectionState)
         outState.putParcelable(Constants.AUTH_METHOD, authMethod)
         outState.putString(Constants.SENT_TO, sentTo)
         outState.putString(Constants.CHANNEL, channel)
@@ -67,6 +61,9 @@ class MFAVerificationFragment : Fragment() {
 
     private fun init() {
         initializeLabels()
+        if (currentState is StrongAuthVerificationRequiredStateV2) {
+            binding.resendChallengeText.visibility = View.GONE
+        }
         initializeButtonListeners()
     }
 
@@ -146,7 +143,8 @@ class MFAVerificationFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launchWhenStarted {
             when (val state = currentState) {
                 is MFARequiredState -> resendChallengeV1(state)
-                else -> resendChallengeV2()
+                is MFAVerificationRequiredStateV2 -> resendChallengeV2(state)
+                else -> displayDialog(getString(R.string.unexpected_sdk_result_title), state.toString())
             }
         }
     }
@@ -169,22 +167,9 @@ class MFAVerificationFragment : Fragment() {
         }
     }
 
-    private suspend fun resendChallengeV2() {
-        val result = when (val state = selectionState) {
-            is MFARequiredStateV2 -> state.selectAuthMethod(authMethod)
-            is StrongAuthRegistrationRequiredStateV2 -> state.selectAuthMethod(authMethod)
-            else -> null
-        }
-
-        when (result) {
+    private suspend fun resendChallengeV2(state: MFAVerificationRequiredStateV2) {
+        when (val result = state.resendChallenge()) {
             is NativeAuthResultV2.MFAVerificationRequired -> {
-                currentState = result.nextState
-                sentTo = result.sentTo
-                channel = result.channel
-                initializeLabels()
-                Toast.makeText(requireContext(), getString(R.string.resend_challenge_message), Toast.LENGTH_LONG).show()
-            }
-            is NativeAuthResultV2.StrongAuthVerificationRequired -> {
                 currentState = result.nextState
                 sentTo = result.sentTo
                 channel = result.channel
@@ -196,9 +181,6 @@ class MFAVerificationFragment : Fragment() {
                     result.error ?: getString(R.string.unexpected_sdk_error_title),
                     result.exception?.message ?: result.errorMessage
                 )
-            }
-            null -> {
-                displayDialog(getString(R.string.unexpected_sdk_result_title), "No authentication method selection state was available.")
             }
             else -> {
                 displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
