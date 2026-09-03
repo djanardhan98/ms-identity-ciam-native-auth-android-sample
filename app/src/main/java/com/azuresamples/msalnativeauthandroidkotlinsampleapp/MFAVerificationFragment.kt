@@ -2,6 +2,7 @@ package com.azuresamples.msalnativeauthandroidkotlinsampleapp
 
 import android.app.AlertDialog
 import android.os.Bundle
+import android.os.Parcelable
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -11,9 +12,7 @@ import androidx.lifecycle.lifecycleScope
 import com.azuresamples.msalnativeauthandroidkotlinsampleapp.databinding.FragmentMfaChallengeBinding
 import com.microsoft.identity.nativeauth.AuthMethod
 import com.microsoft.identity.nativeauth.statemachine.errors.MFARequestChallengeError
-import com.microsoft.identity.nativeauth.statemachine.errors.MFARequestChallengeErrorV2
 import com.microsoft.identity.nativeauth.statemachine.errors.MFASubmitChallengeError
-import com.microsoft.identity.nativeauth.statemachine.errors.MFASubmitChallengeErrorV2
 import com.microsoft.identity.nativeauth.statemachine.errors.NativeAuthErrorV2
 import com.microsoft.identity.nativeauth.statemachine.results.MFARequiredResult
 import com.microsoft.identity.nativeauth.statemachine.results.NativeAuthResultV2
@@ -21,12 +20,14 @@ import com.microsoft.identity.nativeauth.statemachine.results.SignInResult
 import com.microsoft.identity.nativeauth.statemachine.states.MFARequiredState
 import com.microsoft.identity.nativeauth.statemachine.states.MFARequiredStateV2
 import com.microsoft.identity.nativeauth.statemachine.states.MFAVerificationRequiredStateV2
+import com.microsoft.identity.nativeauth.statemachine.states.StrongAuthRegistrationRequiredStateV2
+import com.microsoft.identity.nativeauth.statemachine.states.StrongAuthVerificationRequiredStateV2
 import kotlinx.coroutines.launch
 
 class MFAVerificationFragment : Fragment() {
-    private var currentState: MFARequiredState? = null
-    private var mfaStateV2: MFARequiredStateV2? = null
-    private var verificationStateV2: MFAVerificationRequiredStateV2? = null
+    private lateinit var currentState: Parcelable
+    private var selectionState: Parcelable? = null
+    private var returnToMfaTab = false
     private lateinit var authMethod: AuthMethod
     private lateinit var sentTo: String
     private lateinit var channel: String
@@ -41,15 +42,13 @@ class MFAVerificationFragment : Fragment() {
         _binding = FragmentMfaChallengeBinding.inflate(inflater, container, false)
 
         val bundle = savedInstanceState ?: requireArguments()
-        if (Configuration.useNativeAuthV2) {
-            mfaStateV2 = bundle.getParcelable(Constants.MFA_STATE) as? MFARequiredStateV2
-            verificationStateV2 = bundle.getParcelable(Constants.STATE) as? MFAVerificationRequiredStateV2
-        } else {
-            currentState = bundle.getParcelable(Constants.STATE) as? MFARequiredState
-        }
-        authMethod = (bundle.getParcelable(Constants.AUTH_METHOD) as? AuthMethod)!!
-        sentTo = bundle.getString(Constants.SENT_TO)!!
-        channel = bundle.getString(Constants.CHANNEL)!!
+        currentState = requireNotNull(bundle.getParcelable(Constants.STATE) as? Parcelable)
+        selectionState = bundle.getParcelable(Constants.SELECTION_STATE) as? Parcelable
+            ?: bundle.getParcelable(Constants.MFA_STATE) as? Parcelable
+        returnToMfaTab = bundle.getBoolean(Constants.RETURN_TO_MFA_TAB)
+        authMethod = requireNotNull(bundle.getParcelable(Constants.AUTH_METHOD) as? AuthMethod)
+        sentTo = requireNotNull(bundle.getString(Constants.SENT_TO))
+        channel = requireNotNull(bundle.getString(Constants.CHANNEL))
 
         init()
 
@@ -58,15 +57,12 @@ class MFAVerificationFragment : Fragment() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        if (Configuration.useNativeAuthV2) {
-            outState.putParcelable(Constants.MFA_STATE, mfaStateV2)
-            outState.putParcelable(Constants.STATE, verificationStateV2)
-        } else {
-            outState.putParcelable(Constants.STATE, currentState)
-        }
+        outState.putParcelable(Constants.STATE, currentState)
+        outState.putParcelable(Constants.SELECTION_STATE, selectionState)
         outState.putParcelable(Constants.AUTH_METHOD, authMethod)
         outState.putString(Constants.SENT_TO, sentTo)
         outState.putString(Constants.CHANNEL, channel)
+        outState.putBoolean(Constants.RETURN_TO_MFA_TAB, returnToMfaTab)
     }
 
     private fun init() {
@@ -94,34 +90,36 @@ class MFAVerificationFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launchWhenStarted {
             val emailCode = binding.challengeText.text.toString()
 
-            if (Configuration.useNativeAuthV2) {
-                verifyChallengeV2(emailCode)
-                return@launchWhenStarted
-            }
-
-            val actionResult = currentState!!.submitChallenge(emailCode)
-
-            when (actionResult) {
-                is SignInResult.Complete -> {
-                    Toast.makeText(
-                        requireContext(),
-                        getString(R.string.sign_in_successful_message),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    finish()
-                }
-                is MFASubmitChallengeError -> {
-                    handleMFASubmitChallengeError(actionResult)
-                }
-                else -> {
-                    displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
-                }
+            when (val state = currentState) {
+                is MFARequiredState -> verifyChallengeV1(state, emailCode)
+                is MFAVerificationRequiredStateV2 -> verifyChallengeV2(state.submitChallenge(emailCode))
+                is StrongAuthVerificationRequiredStateV2 -> verifyChallengeV2(state.submitChallenge(emailCode))
+                else -> displayDialog(getString(R.string.unexpected_sdk_result_title), state.toString())
             }
         }
     }
 
-    private suspend fun verifyChallengeV2(emailCode: String) {
-        when (val result = verificationStateV2?.submitChallenge(emailCode)) {
+    private suspend fun verifyChallengeV1(state: MFARequiredState, emailCode: String) {
+        when (val result = state.submitChallenge(emailCode)) {
+            is SignInResult.Complete -> {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.sign_in_successful_message),
+                    Toast.LENGTH_SHORT
+                ).show()
+                finish()
+            }
+            is MFASubmitChallengeError -> {
+                handleMFASubmitChallengeError(result)
+            }
+            else -> {
+                displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
+            }
+        }
+    }
+
+    private fun verifyChallengeV2(result: NativeAuthResultV2) {
+        when (result) {
             is NativeAuthResultV2.Complete -> {
                 Toast.makeText(
                     requireContext(),
@@ -130,20 +128,11 @@ class MFAVerificationFragment : Fragment() {
                 ).show()
                 finish()
             }
-            is MFASubmitChallengeErrorV2 -> {
-                displayDialog(
-                    result.error ?: getString(R.string.unexpected_sdk_error_title),
-                    result.exception?.message ?: result.errorMessage
-                )
-            }
             is NativeAuthErrorV2 -> {
                 displayDialog(
                     result.error ?: getString(R.string.unexpected_sdk_error_title),
                     result.exception?.message ?: result.errorMessage
                 )
-            }
-            null -> {
-                displayDialog(getString(R.string.unexpected_sdk_result_title), "No MFA verification state was available.")
             }
             else -> {
                 displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
@@ -155,42 +144,52 @@ class MFAVerificationFragment : Fragment() {
         clearChallengeText()
 
         viewLifecycleOwner.lifecycleScope.launchWhenStarted {
-            if (Configuration.useNativeAuthV2) {
-                resendChallengeV2()
-                return@launchWhenStarted
-            }
-
-            val actionResult = currentState!!.requestChallenge(authMethod)
-
-            when (actionResult) {
-                is MFARequiredResult.VerificationRequired -> {
-                    currentState = actionResult.nextState
-                    Toast.makeText(requireContext(), getString(R.string.resend_challenge_message), Toast.LENGTH_LONG).show()
-                }
-                is MFARequestChallengeError -> {
-                    handleMFARequestChallengeError(actionResult)
-                }
-                else -> {
-                    displayDialog(getString(R.string.unexpected_sdk_result_title), actionResult.toString())
-                }
+            when (val state = currentState) {
+                is MFARequiredState -> resendChallengeV1(state)
+                else -> resendChallengeV2()
             }
         }
     }
 
-    private suspend fun resendChallengeV2() {
-        when (val result = mfaStateV2?.selectAuthMethod(authMethod)) {
-            is NativeAuthResultV2.MFAVerificationRequired -> {
-                verificationStateV2 = result.nextState
+    private suspend fun resendChallengeV1(state: MFARequiredState) {
+        when (val result = state.requestChallenge(authMethod)) {
+            is MFARequiredResult.VerificationRequired -> {
+                currentState = result.nextState
                 sentTo = result.sentTo
                 channel = result.channel
                 initializeLabels()
                 Toast.makeText(requireContext(), getString(R.string.resend_challenge_message), Toast.LENGTH_LONG).show()
             }
-            is MFARequestChallengeErrorV2 -> {
-                displayDialog(
-                    result.error ?: getString(R.string.unexpected_sdk_error_title),
-                    result.exception?.message ?: result.errorMessage
-                )
+            is MFARequestChallengeError -> {
+                handleMFARequestChallengeError(result)
+            }
+            else -> {
+                displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
+            }
+        }
+    }
+
+    private suspend fun resendChallengeV2() {
+        val result = when (val state = selectionState) {
+            is MFARequiredStateV2 -> state.selectAuthMethod(authMethod)
+            is StrongAuthRegistrationRequiredStateV2 -> state.selectAuthMethod(authMethod)
+            else -> null
+        }
+
+        when (result) {
+            is NativeAuthResultV2.MFAVerificationRequired -> {
+                currentState = result.nextState
+                sentTo = result.sentTo
+                channel = result.channel
+                initializeLabels()
+                Toast.makeText(requireContext(), getString(R.string.resend_challenge_message), Toast.LENGTH_LONG).show()
+            }
+            is NativeAuthResultV2.StrongAuthVerificationRequired -> {
+                currentState = result.nextState
+                sentTo = result.sentTo
+                channel = result.channel
+                initializeLabels()
+                Toast.makeText(requireContext(), getString(R.string.resend_challenge_message), Toast.LENGTH_LONG).show()
             }
             is NativeAuthErrorV2 -> {
                 displayDialog(
@@ -199,7 +198,7 @@ class MFAVerificationFragment : Fragment() {
                 )
             }
             null -> {
-                displayDialog(getString(R.string.unexpected_sdk_result_title), "No MFA state was available.")
+                displayDialog(getString(R.string.unexpected_sdk_result_title), "No authentication method selection state was available.")
             }
             else -> {
                 displayDialog(getString(R.string.unexpected_sdk_result_title), result.toString())
@@ -243,7 +242,7 @@ class MFAVerificationFragment : Fragment() {
 
     private fun finish() {
         val fragmentManager = requireActivity().supportFragmentManager
-        if (Configuration.useNativeAuthV2) {
+        if (!returnToMfaTab && Configuration.useNativeAuthV2) {
             fragmentManager.popBackStack()
             return
         }
